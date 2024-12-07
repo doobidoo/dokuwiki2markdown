@@ -160,13 +160,173 @@ class DokuWikiConverter:
         content = self._convert_links(content, root_path)
         content = self._convert_tables(content)
         content = self._convert_formatting(content)
+        content = self._convert_plugins(content)
         
         # Restore preserved blocks
         content = self._restore_special_blocks(content, preserved_blocks)
         
         return content.strip()
 
-    # ... [Rest of the conversion methods would go here]
+    def _preserve_special_blocks(self, content: str) -> Dict[str, str]:
+        """Preserve special blocks by replacing them with unique identifiers."""
+        preserved = {}
+        
+        # Define patterns for special blocks
+        patterns = {
+            'code': r'(<code.*?>.*?</code>)',
+            'note': r'(<note.*?>.*?</note>)',
+            'mermaid': r'(<mermaid.*?>.*?</mermaid>)',
+            'uml': r'(<uml.*?>.*?</uml>)'
+        }
+        
+        for block_type, pattern in patterns.items():
+            matches = re.finditer(pattern, content, re.DOTALL)
+            for match in matches:
+                uid = str(uuid.uuid4())
+                preserved[uid] = match.group(0)
+                content = content.replace(match.group(0), uid)
+        
+        return preserved
+
+    def _restore_special_blocks(self, content: str, preserved_blocks: Dict[str, str]) -> str:
+        """Restore preserved blocks by converting them to markdown format."""
+        for uid, block in preserved_blocks.items():
+            if '<code' in block:
+                converted = self._convert_code_block(block)
+            elif '<note' in block:
+                converted = self._convert_note_block(block)
+            elif '<mermaid' in block:
+                converted = self._convert_mermaid_block(block)
+            elif '<uml' in block:
+                converted = self._convert_uml_block(block)
+            else:
+                converted = block
+            content = content.replace(uid, converted)
+        return content
+
+    def _convert_headings(self, content: str) -> str:
+        """Convert DokuWiki headings to Markdown headings."""
+        patterns = [
+            (r'^====== (.+?) ======', r'# \1'),
+            (r'^===== (.+?) =====', r'## \1'),
+            (r'^==== (.+?) ====', r'### \1'),
+            (r'^=== (.+?) ===', r'#### \1'),
+            (r'^== (.+?) ==', r'##### \1'),
+            (r'^= (.+?) =', r'###### \1')
+        ]
+        
+        for pattern, replacement in patterns:
+            content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+        
+        return content
+
+    def _convert_links(self, content: str, root_path: Path) -> str:
+        """Convert DokuWiki links to Markdown/Obsidian links."""
+        def convert_internal_link(match) -> str:
+            link = match.group(1)
+            text = match.group(2) if len(match.groups()) > 1 else None
+            
+            if any(prefix in link for prefix in ['http://', 'https://']):
+                return f'[{text or link}]({link})'
+            
+            # Convert internal wiki links
+            path_parts = link.split(':')
+            link_path = Path(*path_parts)
+            
+            if text and text.lower() != link_path.name.lower():
+                return f'[[{link_path.name}|{text}]]'
+            return f'[[{link_path.name}]]'
+
+        # Convert DokuWiki links
+        content = re.sub(r'\[\[([^|]+)\|([^\]]+)\]\]', convert_internal_link, content)
+        content = re.sub(r'\[\[([^\]]+)\]\]', convert_internal_link, content)
+        
+        return content
+
+    def _convert_tables(self, content: str) -> str:
+        """Convert DokuWiki tables to Markdown tables."""
+        lines = content.split('\n')
+        in_table = False
+        markdown_lines = []
+        
+        for line in lines:
+            if line.strip().startswith('^') or line.strip().startswith('|'):
+                if not in_table:
+                    in_table = True
+                # Convert DokuWiki table syntax to Markdown
+                line = line.strip()
+                line = re.sub(r'[\^|]', '|', line)
+                if line.endswith('|'):
+                    line = line[:-1]
+                if line.startswith('|'):
+                    line = line[1:]
+                cells = [cell.strip() for cell in line.split('|')]
+                markdown_lines.append('| ' + ' | '.join(cells) + ' |')
+                
+                # Add header separator
+                if line.strip().startswith('^') and not any('---' in l for l in markdown_lines[-2:]):
+                    markdown_lines.append('| ' + ' | '.join(['---' for _ in cells]) + ' |')
+            else:
+                in_table = False
+                markdown_lines.append(line)
+        
+        return '\n'.join(markdown_lines)
+
+    def _convert_formatting(self, content: str) -> str:
+        """Convert DokuWiki text formatting to Markdown."""
+        # Bold
+        content = re.sub(r'\*\*(.+?)\*\*', r'**\1**', content)
+        # Italic
+        content = re.sub(r'//(.+?)//', r'*\1*', content)
+        # Underline
+        content = re.sub(r'__(.+?)__', r'<u>\1</u>', content)
+        # Strikethrough
+        content = re.sub(r'<del>(.*?)</del>', r'~~\1~~', content)
+        
+        return content
+
+    def _convert_plugins(self, content: str) -> str:
+        """Convert DokuWiki plugin syntax."""
+        # Remove indexmenu
+        content = re.sub(r'\{\{indexmenu>([^|}]+)(?:\|(?:[^}]+))?\}\}', '', content)
+        
+        # Convert include plugin
+        content = re.sub(r'\{\{(page|section)>([^|}]+)(?:\|(?:[^}]+))?\}\}', r'![\2]', content)
+        
+        return content
+
+    def _convert_code_block(self, block: str) -> str:
+        """Convert code blocks to markdown format."""
+        match = re.search(r'<code.*?>(.*?)</code>', block, re.DOTALL)
+        if match:
+            code = match.group(1).strip()
+            return f'\n```\n{code}\n```\n'
+        return block
+
+    def _convert_note_block(self, block: str) -> str:
+        """Convert note blocks to Obsidian callouts."""
+        match = re.search(r'<note(?:\s+(?P<type>tip|important|warning|caution))?\s*>(.*?)</note>', block, re.DOTALL)
+        if match:
+            note_type = match.group('type').upper() if match.group('type') else 'NOTE'
+            content = match.group(2).strip()
+            return f'\n> [!{note_type}]\n> {content}\n'
+        return block
+
+    def _convert_mermaid_block(self, block: str) -> str:
+        """Convert mermaid blocks to markdown format."""
+        match = re.search(r'<mermaid.*?>(.*?)</mermaid>', block, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            return f'\n```mermaid\n{content}\n```\n'
+        return block
+
+    def _convert_uml_block(self, block: str) -> str:
+        """Convert UML blocks to markdown format."""
+        match = re.search(r'<uml.*?>(.*?)</uml>', block, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            return f'\n```plantuml\n{content}\n```\n'
+        return block
 
 def get_valid_path(prompt: str, must_exist: bool = False) -> Path:
     """
