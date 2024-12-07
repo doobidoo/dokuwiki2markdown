@@ -168,12 +168,67 @@ class DokuWikiConverter:
 
     # ... [Rest of the conversion methods would go here]
 
+def get_valid_path(prompt: str, must_exist: bool = False) -> Path:
+    """
+    Prompt for and validate a directory path.
+    
+    Args:
+        prompt: The prompt to show to the user
+        must_exist: Whether the path must already exist
+    
+    Returns:
+        Path object of validated directory
+    """
+    while True:
+        path_str = input(prompt).strip()
+        
+        # Handle empty input
+        if not path_str:
+            print("Please enter a path.")
+            continue
+            
+        # Convert to Path object and resolve to absolute path
+        try:
+            path = Path(path_str).resolve()
+        except Exception as e:
+            print(f"Invalid path format: {e}")
+            continue
+            
+        # Check if path exists when required
+        if must_exist and not path.exists():
+            print(f"Path does not exist: {path}")
+            continue
+            
+        # For source folder, check if it has the required structure
+        if must_exist and 'pages' not in [x.name for x in path.iterdir()]:
+            print(f"Source folder must contain a 'pages' subdirectory: {path}")
+            continue
+            
+        return path
+
 def main():
     """Main entry point for the converter."""
+    print("\nDokuWiki to Obsidian Markdown Converter")
+    print("---------------------------------------\n")
+    
     try:
+        # Get source folder (must exist and have proper structure)
+        source = get_valid_path(
+            "Enter the path to DokuWiki's data folder (containing 'pages' subdirectory): ", 
+            must_exist=True
+        )
+        
+        # Get destination folder (will be created if doesn't exist)
+        dest = get_valid_path(
+            "Enter the destination path for Obsidian vault: "
+        )
+        
+        print(f"\nConverting from: {source}")
+        print(f"Converting to: {dest}\n")
+        
         config = ConverterConfig(
-            source_folder=Path('path/to/source'),
-            destination_folder=Path('path/to/destination')
+            source_folder=source,
+            destination_folder=dest
         )
         
         converter = DokuWikiConverter(config)
