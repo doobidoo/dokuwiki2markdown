@@ -77,10 +77,13 @@ class DokuWikiConverter:
             title = self._extract_first_heading(content)
             converted_content = self._convert_syntax(content, dokuwiki_path.parent)
             
+            # Create sanitized folder names for each part of the path
             rel_path = dokuwiki_path.relative_to(self.config.source_folder / 'pages')
-            obsidian_folder = self.config.destination_folder / rel_path.parent
+            safe_parts = [self._sanitize_filename(part) for part in rel_path.parent.parts]
+            obsidian_folder = self.config.destination_folder.joinpath(*safe_parts)
             obsidian_path = obsidian_folder / f"{title}.md"
 
+            self.logger.info(f"Converting {dokuwiki_path} to {obsidian_path}")
             return obsidian_path, converted_content
 
         except Exception as e:
@@ -90,16 +93,47 @@ class DokuWikiConverter:
     def process_all_files(self) -> None:
         """Process all DokuWiki files in parallel."""
         try:
+            # Get list of all .txt files in pages directory
+            pages_dir = self.config.source_folder / 'pages'
+            if not pages_dir.exists():
+                raise ValueError(f"Pages directory not found: {pages_dir}")
+                
+            files = list(pages_dir.rglob('*.txt'))
+            total_files = len(files)
+            
+            if total_files == 0:
+                self.logger.warning(f"No .txt files found in {pages_dir}")
+                return
+                
+            self.logger.info(f"Found {total_files} files to process")
+            processed_count = 0
+            error_count = 0
+
             with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
                 futures = []
-                for file_path in (self.config.source_folder / 'pages').rglob('*.txt'):
+                for file_path in files:
                     futures.append(executor.submit(self.convert_file, file_path))
 
                 for future in futures:
-                    result = future.result()
-                    if result:
-                        obsidian_path, content = result
-                        self._write_file(obsidian_path, content)
+                    try:
+                        result = future.result()
+                        if result:
+                            obsidian_path, content = result
+                            try:
+                                self._write_file(obsidian_path, content)
+                                processed_count += 1
+                                self.logger.info(f"Processed {processed_count}/{total_files}: {obsidian_path}")
+                            except Exception as e:
+                                error_count += 1
+                                self.logger.error(f"Error writing file {obsidian_path}: {str(e)}")
+                    except Exception as e:
+                        error_count += 1
+                        self.logger.error(f"Error processing file: {str(e)}")
+
+            self.logger.info(f"\nConversion Summary:")
+            self.logger.info(f"Total files found: {total_files}")
+            self.logger.info(f"Successfully processed: {processed_count}")
+            self.logger.info(f"Errors encountered: {error_count}")
 
             self._copy_media_files()
             
@@ -109,11 +143,24 @@ class DokuWikiConverter:
 
     def _write_file(self, path: Path, content: str) -> None:
         """Write content to file if necessary."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        
-        if not self._should_skip_write(path, content):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Check if file exists and content is different
+            if path.exists():
+                existing_hash = hashlib.md5(path.read_text(encoding='utf-8').encode()).hexdigest()
+                new_hash = hashlib.md5(content.encode()).hexdigest()
+                if existing_hash == new_hash:
+                    self.logger.info(f"Skipping unchanged file: {path}")
+                    return
+                    
+            # Write the file
             path.write_text(content, encoding='utf-8')
-            self.logger.info(f"Wrote file: {path}")
+            self.logger.info(f"Written file: {path}")
+            
+        except Exception as e:
+            self.logger.error(f"Error writing file {path}: {str(e)}")
+            raise
 
     def _should_skip_write(self, path: Path, new_content: str) -> bool:
         """Determine if file should be skipped based on content hash."""
@@ -145,10 +192,47 @@ class DokuWikiConverter:
                     self.logger.info(f"Copied media file: {rel_path}")
 
     @staticmethod
+    def _sanitize_filename(filename: str) -> str:
+        """
+        Sanitize filename to be compatible with all operating systems.
+        
+        Args:
+            filename: The original filename
+            
+        Returns:
+            A sanitized filename safe for all operating systems
+        """
+        # Characters not allowed in various operating systems
+        forbidden_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
+        
+        # Replace forbidden characters with a safe alternative
+        for char in forbidden_chars:
+            filename = filename.replace(char, '-')
+            
+        # Additional Windows filename restrictions
+        filename = filename.rstrip('. ')  # Windows doesn't allow trailing dots or spaces
+        
+        # Handle reserved Windows filenames
+        reserved_names = {
+            'CON', 'PRN', 'AUX', 'NUL',
+            'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+            'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+        }
+        if filename.upper() in reserved_names:
+            filename = f"_{filename}"
+            
+        # Ensure filename isn't empty after sanitization
+        if not filename.strip('-. '):
+            filename = "untitled"
+            
+        return filename.strip()
+
+    @staticmethod
     def _extract_first_heading(content: str) -> str:
         """Extract the first heading from DokuWiki content."""
         match = re.search(r'====== (.+?) ======', content)
-        return match.group(1) if match else "Untitled"
+        title = match.group(1) if match else "Untitled"
+        return DokuWikiConverter._sanitize_filename(title)
 
     def _convert_syntax(self, content: str, root_path: Path) -> str:
         """Convert DokuWiki syntax to Markdown/Obsidian syntax."""
@@ -244,33 +328,222 @@ class DokuWikiConverter:
         return content
 
     def _convert_tables(self, content: str) -> str:
-        """Convert DokuWiki tables to Markdown tables."""
+        """Convert DokuWiki tables to Markdown tables with proper handling of inline code."""
+        def process_cell_content(cell: str) -> str:
+            # Handle code blocks in cells
+            cell = re.sub(r'<code.*?>(.*?)</code>', r'`\1`', cell)
+            # Escape pipes that aren't part of table structure
+            cell = cell.replace('|', '\\|')
+            return cell.strip()
+
         lines = content.split('\n')
-        in_table = False
         markdown_lines = []
+        in_table = False
+        header_row = False
         
         for line in lines:
             if line.strip().startswith('^') or line.strip().startswith('|'):
                 if not in_table:
                     in_table = True
-                # Convert DokuWiki table syntax to Markdown
-                line = line.strip()
-                line = re.sub(r'[\^|]', '|', line)
-                if line.endswith('|'):
-                    line = line[:-1]
-                if line.startswith('|'):
-                    line = line[1:]
-                cells = [cell.strip() for cell in line.split('|')]
-                markdown_lines.append('| ' + ' | '.join(cells) + ' |')
+                    header_row = line.strip().startswith('^')
+
+                # Split cells and process content
+                cells = re.split(r'[\^|]', line.strip('|^'))
+                cells = [process_cell_content(cell) for cell in cells if cell.strip()]
                 
-                # Add header separator
-                if line.strip().startswith('^') and not any('---' in l for l in markdown_lines[-2:]):
-                    markdown_lines.append('| ' + ' | '.join(['---' for _ in cells]) + ' |')
+                # Create table row
+                row = f"| {' | '.join(cells)} |"
+                markdown_lines.append(row)
+                
+                # Add separator row after headers
+                if header_row:
+                    markdown_lines.append(f"|{'|'.join(['---' for _ in cells])}|")
+                    header_row = False
             else:
-                in_table = False
+                if in_table:
+                    markdown_lines.append('')  # Add empty line after table
+                    in_table = False
                 markdown_lines.append(line)
         
         return '\n'.join(markdown_lines)
+
+    def _convert_tags(self, content: str) -> str:
+        """Convert DokuWiki tags to Obsidian tags."""
+        def process_tag_match(match):
+            # Extract tags from the tag syntax
+            tags_text = match.group(1)
+            # Split by spaces and clean up each tag
+            tags = re.findall(r'"([^"]+)"|(\S+)', tags_text)
+            # Flatten the tuples and remove empty strings
+            tags = [''.join(t) for t in tags if any(t)]
+            # Format as Obsidian tags
+            return ' '.join(f"#{tag.replace(' ', '_').replace('-', '_')}" for tag in tags)
+            
+        # Convert tag syntax
+        content = re.sub(r'\{\{tag>(.*?)\}\}', process_tag_match, content)
+        return content
+
+    def _convert_media_link(self, match: re.Match) -> str:
+        """Convert DokuWiki media links to Obsidian format."""
+        path = match.group(1)
+        caption = match.group(2) if len(match.groups()) > 1 else None
+        
+        # Handle image extensions
+        image_exts = ['jpg', 'jpeg', 'png', 'svg', 'gif']
+        is_image = any(ext in path.lower() for ext in image_exts)
+        
+        # Clean up the path
+        path = path.split(':')[-1]  # Get last part of path
+        path = re.sub(r'\?.*
+
+    def _convert_plugins(self, content: str) -> str:
+        """Convert DokuWiki plugin syntax."""
+        # Remove indexmenu
+        content = re.sub(r'\{\{indexmenu>([^|}]+)(?:\|(?:[^}]+))?\}\}', '', content)
+        
+        # Convert include plugin
+        content = re.sub(r'\{\{(page|section)>([^|}]+)(?:\|(?:[^}]+))?\}\}', r'![\2]', content)
+        
+        return content
+
+    def _convert_code_block(self, block: str) -> str:
+        """Convert code blocks to markdown format."""
+        match = re.search(r'<code.*?>(.*?)</code>', block, re.DOTALL)
+        if match:
+            code = match.group(1).strip()
+            return f'\n```\n{code}\n```\n'
+        return block
+
+    def _convert_note_block(self, block: str) -> str:
+        """Convert note blocks to Obsidian callouts."""
+        match = re.search(r'<note(?:\s+(?P<type>tip|important|warning|caution))?\s*>(.*?)</note>', block, re.DOTALL)
+        if match:
+            note_type = match.group('type').upper() if match.group('type') else 'NOTE'
+            content = match.group(2).strip()
+            return f'\n> [!{note_type}]\n> {content}\n'
+        return block
+
+    def _convert_mermaid_block(self, block: str) -> str:
+        """Convert mermaid blocks to markdown format."""
+        match = re.search(r'<mermaid.*?>(.*?)</mermaid>', block, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            return f'\n```mermaid\n{content}\n```\n'
+        return block
+
+    def _convert_uml_block(self, block: str) -> str:
+        """Convert UML blocks to markdown format."""
+        match = re.search(r'<uml.*?>(.*?)</uml>', block, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            return f'\n```plantuml\n{content}\n```\n'
+        return block
+
+def get_valid_path(prompt: str, must_exist: bool = False) -> Path:
+    """
+    Prompt for and validate a directory path.
+    
+    Args:
+        prompt: The prompt to show to the user
+        must_exist: Whether the path must already exist
+    
+    Returns:
+        Path object of validated directory
+    """
+    while True:
+        path_str = input(prompt).strip()
+        
+        # Handle empty input
+        if not path_str:
+            print("Please enter a path.")
+            continue
+            
+        # Convert to Path object and resolve to absolute path
+        try:
+            path = Path(path_str).resolve()
+        except Exception as e:
+            print(f"Invalid path format: {e}")
+            continue
+            
+        # Check if path exists when required
+        if must_exist and not path.exists():
+            print(f"Path does not exist: {path}")
+            continue
+            
+        # For source folder, check if it has the required structure
+        if must_exist and 'pages' not in [x.name for x in path.iterdir()]:
+            print(f"Source folder must contain a 'pages' subdirectory: {path}")
+            continue
+            
+        return path
+
+def main():
+    """Main entry point for the converter."""
+    print("\nDokuWiki to Obsidian Markdown Converter")
+    print("---------------------------------------\n")
+    
+    try:
+        # Get source folder (must exist and have proper structure)
+        source = get_valid_path(
+            "Enter the path to DokuWiki's data folder (containing 'pages' subdirectory): ", 
+            must_exist=True
+        )
+        
+        # Get destination folder (will be created if doesn't exist)
+        dest = get_valid_path(
+            "Enter the destination path for Obsidian vault: "
+        )
+        
+        print(f"\nConverting from: {source}")
+        print(f"Converting to: {dest}\n")
+        
+        config = ConverterConfig(
+            source_folder=source,
+            destination_folder=dest
+        )
+        
+        converter = DokuWikiConverter(config)
+        converter.process_all_files()
+        
+        logging.info("Conversion completed successfully!")
+        
+    except Exception as e:
+        logging.error(f"Conversion failed: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    main()
+, '', path)  # Remove query parameters
+        
+        if is_image:
+            return f"![[{path} | 300]]"  # Use consistent image size
+        else:
+            return f"![[{path}]]"
+
+    def _convert_plugins(self, content: str) -> str:
+        """Convert DokuWiki plugin syntax."""
+        # Handle radar charts - convert to code block with comment
+        content = re.sub(
+            r'<radar.*?>(.*?)</radar>',
+            r'```comment\nRadar chart not supported in Obsidian:\n\1\n```',
+            content,
+            flags=re.DOTALL
+        )
+        
+        # Handle drawio diagrams
+        content = re.sub(
+            r'\{\{drawio>(.*?)\}\}',
+            lambda m: f"![[{m.group(1).split(':')[-1]} | 300]]",
+            content
+        )
+        
+        # Remove indexmenu
+        content = re.sub(r'\{\{indexmenu>([^|}]+)(?:\|(?:[^}]+))?\}\}', '', content)
+        
+        # Convert include plugin
+        content = re.sub(r'\{\{(page|section)>([^|}]+)(?:\|(?:[^}]+))?\}\}', r'![\2]', content)
+        
+        return content
 
     def _convert_formatting(self, content: str) -> str:
         """Convert DokuWiki text formatting to Markdown."""
@@ -282,6 +555,8 @@ class DokuWikiConverter:
         content = re.sub(r'__(.+?)__', r'<u>\1</u>', content)
         # Strikethrough
         content = re.sub(r'<del>(.*?)</del>', r'~~\1~~', content)
+        # Remove line breaks
+        content = re.sub(r'\\\\', '', content)
         
         return content
 
