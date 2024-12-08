@@ -59,14 +59,16 @@ class PluginConverter:
         def process_tag_match(match):
             # Extract tags from the tag syntax
             tags_text = match.group(1)
-            # Split by spaces and clean up each tag
+            # Use regex to split by spaces or handle quoted tags
             tags = re.findall(r'"([^"]+)"|(\S+)', tags_text)
             # Flatten the tuples and remove empty strings
-            tags = [''.join(t) for t in tags if any(t)]
-            # Format as Obsidian tags
+            tags = [tag for group in tags for tag in group if tag]
+            # Format as Markdown tags
             return ' '.join(f"#{tag.replace(' ', '_').replace('-', '_')}" for tag in tags)
-            
+
+        # Replace all tag syntax in the content
         return re.sub(r'\{\{tag>(.*?)\}\}', process_tag_match, content)
+
 
     def _convert_radar_charts(self, content: str) -> str:
         """Convert radar charts to a comment block since Obsidian doesn't support them directly."""
