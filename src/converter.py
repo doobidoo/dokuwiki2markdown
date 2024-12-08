@@ -11,7 +11,7 @@ from .converters.formatting import FormattingConverter
 from .converters.media import MediaConverter
 from .converters.plugins import PluginConverter
 from .converters.special import SpecialBlockConverter
-from .utils.file_handling import should_update_file, copy_media_files
+from .utils.file_handling import FileHandler  # Updated import
 from .utils.sanitization import sanitize_filename
 
 class DokuWikiConverter:
@@ -27,6 +27,7 @@ class DokuWikiConverter:
         self.media_converter = MediaConverter(config.default_image_width)
         self.plugin_converter = PluginConverter()
         self.special_converter = SpecialBlockConverter()
+        self.file_handler = FileHandler()  # Initialize FileHandler
 
     def convert_file(self, dokuwiki_path: Path) -> Optional[Tuple[Path, str]]:
         """Convert a single DokuWiki file to Markdown."""
@@ -79,7 +80,7 @@ class DokuWikiConverter:
                         result = future.result()
                         if result:
                             obsidian_path, content = result
-                            if should_update_file(obsidian_path, content):
+                            if FileHandler.should_update_file(obsidian_path, content):  # Use class method
                                 obsidian_path.parent.mkdir(parents=True, exist_ok=True)
                                 obsidian_path.write_text(content, encoding='utf-8')
                                 processed_count += 1
@@ -95,7 +96,8 @@ class DokuWikiConverter:
             self.logger.info(f"Successfully processed: {processed_count}")
             self.logger.info(f"Errors encountered: {error_count}")
 
-            copy_media_files(self.config.source_folder, self.config.destination_folder)
+            # Use FileHandler for copying media files
+            FileHandler.copy_media_files(self.config.source_folder, self.config.destination_folder)
             
         except Exception as e:
             self.logger.error(f"Error processing files: {str(e)}")

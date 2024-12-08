@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from src.config import ConverterConfig
 from src.converter import DokuWikiConverter
-from src.utils.file_handling import get_valid_path
+from src.utils.file_handling import FileHandler  # Updated import
 
 def setup_logging():
     """Configure logging for the application."""
@@ -32,13 +32,13 @@ def main():
     
     try:
         # Get source folder (must exist and have proper structure)
-        source = get_valid_path(
+        source = FileHandler.get_valid_path(
             "Enter the path to DokuWiki's data folder (containing 'pages' subdirectory): ", 
             must_exist=True
         )
         
         # Get destination folder (will be created if doesn't exist)
-        dest = get_valid_path(
+        dest = FileHandler.get_valid_path(
             "Enter the destination path for Obsidian vault: "
         )
         
