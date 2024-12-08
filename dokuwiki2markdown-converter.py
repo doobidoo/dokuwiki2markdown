@@ -511,9 +511,7 @@ def main():
         logging.error(f"Conversion failed: {str(e)}")
         raise
 
-if __name__ == "__main__":
-    main()
-, '', path)  # Remove query parameters
+if __name__ == "__main__":main(), '', path)  # Remove query parameters
         
         if is_image:
             return f"![[{path} | 300]]"  # Use consistent image size

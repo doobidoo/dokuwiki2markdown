@@ -90,3 +90,33 @@ This python script converts dokuwiki markup into markdown for Git or Obsidian
 - Success/failure logging
 
 This converter is designed to handle complex DokuWiki installations while providing reliable, efficient, and maintainable conversion to Obsidian markdown format. It's particularly suited for large wikis with complex formatting and media requirements.
+
+## DokuWiki to Markdown Converter - Project Structure
+dokuwiki2markdown/
+│
+├── src/
+│   ├── __init__.py
+│   ├── main.py              # Entry point
+│   ├── config.py            # Configuration handling
+│   ├── converter.py         # Main converter class
+│   ├── converters/
+│   │   ├── __init__.py
+│   │   ├── tables.py        # Table conversion
+│   │   ├── formatting.py    # Text formatting
+│   │   ├── media.py        # Media and links
+│   │   ├── plugins.py      # Plugin handling
+│   │   └── special.py      # Special blocks (code, notes, etc.)
+│   └── utils/
+│       ├── __init__.py
+│       ├── file_handling.py # File operations
+│       └── sanitization.py  # Filename sanitization
+│
+├── tests/                   # Test files
+│   ├── __init__.py
+│   ├── test_tables.py
+│   ├── test_formatting.py
+│   └── test_media.py
+│
+├── README.md
+├── requirements.txt
+└── setup.py
